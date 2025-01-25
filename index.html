@@ -251,7 +251,7 @@
                 input.addEventListener('change', async function() {
                     const value = parseFloat(this.value);
                     if (!isNaN(value) && value >= 0 && value <= 10000) {
-                        await sendCommand(SET_RPM:${index},${value});
+                        await sendCommand(`SET_RPM:${index},${value}`);
                         this.value = '';
                         this.placeholder = 'Value sent';
                         setTimeout(() => {
@@ -265,7 +265,7 @@
                 input.addEventListener('change', async function() {
                     const value = parseFloat(this.value);
                     if (!isNaN(value) && value >= 0 && value <= 100) {
-                        await sendCommand(SET_OIL:${index},${value.toFixed(1)});
+                        await sendCommand(`SET_OIL:${index},${value.toFixed(1)}`);
                         this.value = '';
                         this.placeholder = 'Value sent';
                         setTimeout(() => {
@@ -283,7 +283,7 @@
                     const value = parseFloat(this.value);
                     if (!isNaN(value) && value >= 0 && value <= 10000) {
                         // Send index-1 to match Arduino's 0-based array
-                        await sendCommand(SET_RPM:${index},${value});
+                        await sendCommand(`SET_RPM:${index},${value}`);
                         this.value = '';
                         this.placeholder = 'Value sent';
                         setTimeout(() => {
@@ -298,7 +298,7 @@
                     const value = parseFloat(this.value);
                     if (!isNaN(value) && value >= 0 && value <= 100) {
                         // Send index-1 to match Arduino's 0-based array
-                        await sendCommand(SET_OIL:${index},${value.toFixed(1)});
+                        await sendCommand(`SET_OIL:${index},${value.toFixed(1)}`);
                         this.value = '';
                         this.placeholder = 'Value sent';
                         setTimeout(() => {
@@ -318,7 +318,7 @@
             for (const port of ports) {
                 const option = document.createElement('option');
                 option.value = port.getInfo().usbVendorId;
-                option.text = Port ${port.getInfo().usbVendorId};
+                option.text = `Port ${port.getInfo().usbVendorId}`;
                 select.appendChild(option);
             }
         }
@@ -384,7 +384,7 @@
             
             if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
                 reconnectAttempts++;
-                document.getElementById('statusBar').textContent = Reconnecting (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...;
+                document.getElementById('statusBar').textContent = `Reconnecting (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`;
                 setTimeout(connectPort, RECONNECT_DELAY);
             } else {
                 await disconnect();
@@ -508,7 +508,7 @@
                         document.getElementById('rpm').value = values.rpm.toFixed(0);
                         document.getElementById('oil').value = values.oil.toFixed(1);
                         document.getElementById('pwml').value = values.pwml.toFixed(2);
-                        document.getElementById('current-rpm').textContent = ${values.rpm.toFixed(0)} RPM | ${values.oil.toFixed(1)}%;
+                        document.getElementById('current-rpm').textContent = `${values.rpm.toFixed(0)} RPM | ${values.oil.toFixed(1)}%`;
                         lastValidData = values;
                         updateCurrentValues(values.rpm, values.oil);
                     }
@@ -524,7 +524,7 @@
                         if (rows[idx]) {
                             const currentCell = rows[idx].querySelector('.current-value');
                             if (currentCell) {
-                                currentCell.textContent = Existing: RPM ${rpmValue.toFixed(1)} | Oil: ${oilValue.toFixed(1)}%;
+                                currentCell.textContent = `Existing: RPM ${rpmValue.toFixed(1)} | Oil: ${oilValue.toFixed(1)}%`;
                             }
                         }
                     }
@@ -558,3 +558,316 @@
                 document.getElementById('connectBtn').textContent = 'Disconnect';
                 document.getElementById('connectBtn').classList.add('connected');
                 document.getElementById('saveBtn').disabled = false;
+                document.getElementById('loadBtn').disabled = false;
+                document.getElementById('statusBar').textContent = 'Connected';
+                document.getElementById('statusBar').classList.add('connected');
+                
+                isConnected = true;
+                
+                // Request initial data
+                await sendCommand('TABLE');
+                startReading();
+
+                // Add keep-alive ping
+                startKeepAlive();
+            } catch (error) {
+                console.error('Connection error:', error);
+                document.getElementById('statusBar').textContent = 'Connection Error: ' + error.message;
+                document.getElementById('statusBar').classList.add('error');
+                await disconnect();
+            }
+        }
+
+        // Add keep-alive mechanism
+        let keepAliveInterval;
+        function startKeepAlive() {
+            if (keepAliveInterval) clearInterval(keepAliveInterval);
+            keepAliveInterval = setInterval(async () => {
+                if (isConnected) {
+                    try {
+                        await sendCommand('TABLE');
+                    } catch (error) {
+                        console.error('Keep-alive error:', error);
+                        await disconnect();
+                    }
+                }
+            }, 2000);
+        }
+
+        // Improved disconnect function
+        async function disconnect() {
+            if (connectionTimeout) {
+                clearTimeout(connectionTimeout);
+                connectionTimeout = null;
+            }
+            
+            if (keepAliveInterval) {
+                clearInterval(keepAliveInterval);
+                keepAliveInterval = null;
+            }
+
+            try {
+                if (reader) {
+                    await reader.cancel();
+                    await reader.releaseLock();
+                    reader = null;
+                }
+                
+                if (writer) {
+                    await writer.close();
+                    await writer.releaseLock();
+                    writer = null;
+                }
+                
+                if (port) {
+                    await port.close();
+                    port = null;
+                }
+            } catch (error) {
+                console.error('Disconnect error:', error);
+            }
+
+            updateConnectionStatus(false);
+            dataBuffer = '';  // Clear any partial data
+            reconnectAttempts = 0;
+        }
+
+        // Process incoming serial data
+        async function startReading() {
+            while (port && port.readable) {
+                try {
+                    while (true) {
+                        const { value, done } = await reader.read();
+                        if (done) break;
+                        
+                        const text = new TextDecoder().decode(value);
+                        dataBuffer += text;
+                        
+                        // Process complete lines
+                        const lines = dataBuffer.split('\n');
+                        dataBuffer = lines.pop() || '';
+                        
+                        for (const line of lines) {
+                            if (line.trim() === '') continue;
+                            
+                            try {
+                                if (line.startsWith('TABLE,')) {
+                                    const [_, index, rpm, oil] = line.split(',');
+                                    const idx = parseInt(index);
+                                    const rpmValue = parseFloat(rpm);
+                                    const oilValue = parseFloat(oil);
+                                    
+                                    if (!isNaN(idx) && !isNaN(rpmValue) && !isNaN(oilValue)) {
+                                        // Get table cells (use querySelectorAll to get all cells)
+                                        const cells = document.querySelectorAll('#calibrationTable tbody tr .current-value');
+                                        // Update the corresponding cell (idx is 0-based)
+                                        if (cells[idx]) {
+                                            cells[idx].textContent = `Existing: RPM ${rpmValue.toFixed(1)} | Oil: ${oilValue.toFixed(1)}%`;
+                                        }
+                                    }
+                                }
+                                // ...rest of data processing...
+                            } catch (parseError) {
+                                console.error('Parse error:', parseError, 'Line:', line);
+                            }
+                        }
+                    }
+                } catch (error) {
+                    if (error.name === 'NetworkError' || error.name === 'NotFoundError') {
+                        await handleConnectionError(error);
+                        break;
+                    }
+                    console.error('Read error:', error);
+                }
+            }
+        }
+
+        // Fix updateDisplayValues function
+        function updateDisplayValues(freq, rpm, oil, pwml) {
+            document.getElementById('frequency').value = freq.toFixed(2);
+            document.getElementById('rpm').value = rpm.toFixed(0);
+            document.getElementById('oil').value = oil.toFixed(1);
+            document.getElementById('pwml').value = pwml.toFixed(2);
+            
+            document.getElementById('current-rpm').textContent = `${rpm.toFixed(0)} RPM | ${oil.toFixed(1)}%`;
+            
+            lastValidData = { freq, rpm, oil, pwml };
+            updateCurrentValues(rpm, oil);
+        }
+
+        // Update current values in table
+        function updateCurrentValues(rpm, oilPercent) {
+            const rows = document.querySelectorAll('#calibrationTable tbody tr');
+            
+            if (lastActiveRow) {
+                lastActiveRow.classList.remove('active-row');
+            }
+            
+            for (let i = 0; i < rows.length; i++) {
+                const row = rows[i];
+                const currentCell = row.querySelector('.current-value');
+                // Get the RPM value for this row from the rpmTable
+                const rowRPM = RPM_VALUES[i];
+                
+                if (rpm >= rowRPM && (i === rows.length - 1 || rpm < RPM_VALUES[i + 1])) {
+                    row.classList.add('active-row');
+                    lastActiveRow = row;
+                }
+            }
+        }
+
+        // Send command to Arduino
+        async function sendCommand(command) {
+            if (writer) {
+                try {
+                    await writer.write(new TextEncoder().encode(command + '\n'));
+                } catch (error) {
+                    console.error('Write error:', error);
+                    document.getElementById('statusBar').textContent = 'Write Error: ' + error.message;
+                    document.getElementById('statusBar').classList.add('error');
+                }
+            }
+        }
+
+        // Clear all values
+        function clearValues() {
+            document.getElementById('frequency').value = '0.00';
+            document.getElementById('rpm').value = '0';
+            document.getElementById('current-rpm').textContent = '0 RPM | 0.0%';
+            document.getElementById('oil').value = '0.0';
+            document.getElementById('pwml').value = '900.00';
+            
+            document.querySelectorAll('#calibrationTable tr').forEach(row => {
+                row.classList.remove('active-row');
+                const currentCell = row.querySelector('.current-value');
+                if (currentCell) {
+                    currentCell.textContent = 'RPM: 0 | Oil: 0%';
+                    currentCell.classList.remove('last-value');
+                }
+            });
+        }
+
+        // Initialize event listeners
+        document.addEventListener('DOMContentLoaded', () => {
+            initializeTable();
+            clearValues();
+            
+            document.getElementById('connectBtn').addEventListener('click', connect);
+            
+            let rpmTimeout;
+            document.getElementById('rpm').addEventListener('input', function() {
+                clearTimeout(rpmTimeout);
+                rpmTimeout = setTimeout(() => {
+                    const value = parseFloat(this.value) || 0;
+                    if (value >= 0 && value <= 10000) {
+                        sendCommand(`RPM:${value}`);
+                    } else {
+                        this.value = lastValidData.rpm;
+                    }
+                }, 300);
+            });
+            
+            document.getElementById('saveBtn').addEventListener('click', async () => {
+                await sendCommand('SAVE');
+            });
+            
+            document.getElementById('loadBtn').addEventListener('click', async () => {
+                await sendCommand('LOAD');
+            });
+
+            // Request port permission on page load
+            if (navigator.serial) {
+                navigator.serial.getPorts().then((ports) => {
+                    if (ports.length > 0) {
+                        updatePorts();
+                    }
+                });
+            } else {
+                document.getElementById('statusBar').textContent = 'Web Serial API not supported. Use Chrome or Edge browser.';
+                document.getElementById('statusBar').classList.add('error');
+                document.getElementById('connectBtn').disabled = true;
+            }
+        });
+
+        // Replace these functions with simplified versions
+        function processSerialData(data) {
+            const lines = data.split('\n');
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                
+                if (line.includes('DATA,')) {
+                    const [cmd, freq, rpm, oil, pwml] = line.split(',');
+                    if (cmd === 'DATA') {
+                        document.getElementById('frequency').value = parseFloat(freq).toFixed(2);
+                        document.getElementById('rpm').value = parseFloat(rpm).toFixed(0);
+                        document.getElementById('oil').value = parseFloat(oil).toFixed(1);
+                        document.getElementById('pwml').value = parseFloat(pwml).toFixed(2);
+                        document.getElementById('current-rpm').textContent = 
+                            `${parseFloat(rpm).toFixed(0)} RPM | ${parseFloat(oil).toFixed(1)}%`;
+                        
+                        // Update stored values
+                        lastValidData = {
+                            freq: parseFloat(freq),
+                            rpm: parseFloat(rpm),
+                            oil: parseFloat(oil),
+                            pwml: parseFloat(pwml)
+                        };
+                    }
+                } else if (line.includes('TABLE,')) {
+                    const [cmd, index, rpm, oil] = line.split(',');
+                    if (cmd === 'TABLE') {
+                        const idx = parseInt(index);
+                        const cells = document.querySelectorAll('#calibrationTable tbody tr .current-value');
+                        if (cells[idx]) {
+                            cells[idx].textContent = 
+                                `Existing: RPM ${parseFloat(rpm).toFixed(1)} | Oil: ${parseFloat(oil).toFixed(1)}%`;
+                        }
+                    }
+                }
+            }
+        }
+
+        async function startReading() {
+            while (true) {
+                try {
+                    while (true) {
+                        const { value, done } = await reader.read();
+                        if (done) break;
+                        
+                        const text = new TextDecoder().decode(value);
+                        processSerialData(text);
+                    }
+                } catch (error) {
+                    console.error('Read error:', error);
+                    await handleConnectionError(error);
+                    break;
+                }
+            }
+        }
+
+        async function connect() {
+            try {
+                port = await navigator.serial.requestPort();
+                await port.open({ baudRate: 115200 });
+                reader = port.readable.getReader();
+                writer = port.writable.getWriter();
+                
+                document.getElementById('connectBtn').textContent = 'Disconnect';
+                document.getElementById('connectBtn').classList.add('connected');
+                document.getElementById('saveBtn').disabled = false;
+                document.getElementById('loadBtn').disabled = false;
+                document.getElementById('statusBar').textContent = 'Connected';
+                document.getElementById('statusBar').classList.add('connected');
+                
+                isConnected = true;
+                startReading();
+                startKeepAlive();
+            } catch (error) {
+                console.error('Connection error:', error);
+                document.getElementById('statusBar').textContent = 'Connection Error: ' + error.message;
+                document.getElementById('statusBar').classList.add('error');
+            }
+        }
+    </script>
+</body>
+</html>
